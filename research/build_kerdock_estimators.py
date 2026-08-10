@@ -18,7 +18,10 @@ import argparse
 from pathlib import Path
 
 
-IMPORT_ANCHOR = "from whestbench import BaseEstimator, MLP, SetupContext\n"
+IMPORT_ANCHOR = (
+    "from whestbench import BaseEstimator, SetupContext\n"
+    "from whestbench.domain import MLP\n"
+)
 INIT_ANCHOR = """    def __init__(self) -> None:
         self._setup_rng = None
 """
@@ -64,9 +67,11 @@ def build(source: str, *, haar: bool) -> str:
         SETUP_ANCHOR,
         SETUP_ANCHOR
         + """        # Fixed design construction happens before FLOP tracking and uses no
-        # MLP-specific information.  Every row already includes E[Chi_256].
+        # MLP-specific information.  Every row already includes E[Chi_256].  Shuffling
+        # mixes all 129 bases so the upstream lead-block pruning mask does not see a
+        # pathological run of vectors from only the first few bases.
         self._design = fnp.asarray(
-            build_half_design(seed=ctx.seed, shuffle=False), dtype=fnp.float32
+            build_half_design(seed=ctx.seed, shuffle=True), dtype=fnp.float32
         )
 """,
         "setup",
