@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Build Kerdock spherical-design variants of Oishi1029's MIT sweep estimator.
+"""Build Kerdock/MUB cubature variants of Oishi1029's MIT sweep estimator.
 
-The source estimator is downloaded by the research workflow from the pinned
-upstream commit.  We preserve the complete propagation/pruning implementation
-and replace only the input ensemble and whitening stage:
+The upstream propagation implementation is preserved. We replace only the
+Gaussian input draw/whitening stage with complete mutually-unbiased bases and,
+for selected variants, disable the frozen lead-block mask so all remaining
+pruning is algebraically exact.
 
-* 66,048 equal-weight nodes from the exact R^256 Kerdock/MUB spherical 5-design;
-* exact analytic Gaussian radial mean E[Chi_256], already folded into the nodes;
-* optional per-MLP Haar rotation fused into W_0.
-
-This script deliberately fails closed if any source anchor changes.
+Every generated file is self-contained apart from ``mub_design.py`` in the same
+directory. Anchor replacements fail closed if the pinned upstream changes.
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ import argparse
 from pathlib import Path
 
 
+DEFAULT_BASIS_COUNTS = (8, 12, 16, 20, 24, 32, 48, 64, 96, 129)
 IMPORT_ANCHOR = (
     "from whestbench import BaseEstimator, SetupContext\n"
     "from whestbench.domain import MLP\n"
@@ -36,6 +35,10 @@ SAMPLE_ANCHOR = """        rng = fnp.random.default_rng(mlp.seed)
         w0 = fnp.asarray(mlp.weights[0], dtype=fnp.float32)
         w0f = self._fused_first_layer(xh, w0, k, width)
 """
+TAIL_ANCHOR = "_MIN_TAIL_LAYERS = 3\n"
+DOC_ANCHOR = (
+    '"""Whitened + antithetic MC with two-sided lead-block pruning of the forward pass."""'
+)
 
 
 def _replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -45,7 +48,10 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def build(source: str, *, haar: bool) -> str:
+def build(source: str, *, num_bases: int, exact_tail: bool) -> str:
+    if not 1 <= int(num_bases) <= 129:
+        raise ValueError("num_bases must lie in [1,129]")
+
     text = source
     text = _replace_once(
         text,
@@ -66,12 +72,14 @@ def build(source: str, *, haar: bool) -> str:
         text,
         SETUP_ANCHOR,
         SETUP_ANCHOR
-        + """        # Fixed design construction happens before FLOP tracking and uses no
-        # MLP-specific information.  Every row already includes E[Chi_256].  Shuffling
-        # mixes all 129 bases so the upstream lead-block pruning mask does not see a
-        # pathological run of vectors from only the first few bases.
+        + f"""        # Constructed before FLOP tracking. Each complete basis has exact
+        # covariance; the full 129-basis union is an antipodal spherical 5-design.
+        # Rows already include E[Chi_256], analytically integrating Gaussian radius.
         self._design = fnp.asarray(
-            build_half_design(seed=ctx.seed, shuffle=True), dtype=fnp.float32
+            build_half_design(
+                seed=ctx.seed, shuffle=True, num_bases={int(num_bases)}
+            ),
+            dtype=fnp.float32,
         )
 """,
         "setup",
@@ -85,45 +93,46 @@ def build(source: str, *, haar: bool) -> str:
 """,
         "sample count",
     )
-
-    if haar:
-        sample = """        # The exact design is deterministic; one seeded Haar rotation turns it
-        # into randomized cubature without changing its degree-five exactness.  Fuse the
-        # rotation into W_0 so the 66,048 design rows are never explicitly rotated.
-        rng = fnp.random.default_rng(mlp.seed)
-        half = k // 2
-        xh = self._design
-
-        w0 = fnp.asarray(mlp.weights[0], dtype=fnp.float32)
-        raw_q = rng.standard_normal((width, width), dtype=fnp.float32)
-        q, r = fnp.linalg.qr(raw_q, mode="reduced")
-        diagonal = fnp.diag(r)
-        signs = fnp.where(diagonal >= 0.0, 1.0, -1.0)
-        q = q * signs
-        w0f = q @ w0
-"""
-        title = "Kerdock/MUB spherical-5-design sweep with seeded Haar rotation"
-    else:
-        sample = """        # One representative of every antipodal pair.  _layer0 constructs
-        # the exact negatives algebraically, as in the upstream sweep estimator.
+    text = _replace_once(
+        text,
+        SAMPLE_ANCHOR,
+        """        # One representative from every antipodal pair. _layer0 constructs
+        # the exact negatives algebraically, so no mirrored matmul is performed.
         half = k // 2
         xh = self._design
 
         w0 = fnp.asarray(mlp.weights[0], dtype=fnp.float32)
         w0f = w0
-"""
-        title = "Fixed-orientation Kerdock/MUB spherical-5-design sweep"
-
-    text = _replace_once(text, SAMPLE_ANCHOR, sample, "ensemble")
-    text = text.replace(
-        '"""Whitened + antithetic MC with two-sided lead-block pruning of the forward pass."""',
-        f'"""{title}."""',
-        1,
+""",
+        "ensemble",
     )
+
+    if exact_tail:
+        # This forces the upstream legacy path for depth 32. That path still uses
+        # exact row pruning, but never freezes a mask inferred from 1,024 nodes and
+        # never classifies final-layer columns from the lead block.
+        text = _replace_once(
+            text,
+            TAIL_ANCHOR,
+            "_MIN_TAIL_LAYERS = 10_000\n",
+            "tail-mask constant",
+        )
+        mode = "exact-tail"
+    else:
+        mode = "lead-mask"
+
+    degree = 5 if int(num_bases) == 129 else 3
+    title = (
+        f"Kerdock/MUB {int(num_bases)}-basis antipodal spherical-{degree}-design "
+        f"sweep ({mode})"
+    )
+    text = _replace_once(text, DOC_ANCHOR, f'"""{title}."""', "class docstring")
+
     provenance = (
         "# GENERATED RESEARCH VARIANT. Upstream propagation implementation: "
-        "Oishi1029/arc-whestbench-2026 (MIT).\n"
-        "# Input cubature and patching: kaileh57/whest-starterkit research branch.\n\n"
+        "Oishi1029/arc-whestbench-2026 (MIT), commit "
+        "230a3acae4508ff62dbf57d8c13e534c32583e0a.\n"
+        "# Cubature construction and patching: kaileh57/whest-starterkit.\n\n"
     )
     return provenance + text
 
@@ -132,19 +141,36 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("output_dir", type=Path)
+    parser.add_argument(
+        "--basis-counts",
+        default=",".join(str(x) for x in DEFAULT_BASIS_COUNTS),
+        help="comma-separated complete-basis counts",
+    )
     args = parser.parse_args()
+
+    counts = tuple(int(part.strip()) for part in args.basis_counts.split(",") if part.strip())
+    if not counts:
+        raise ValueError("at least one basis count is required")
+    if len(set(counts)) != len(counts):
+        raise ValueError("basis counts must be unique")
 
     source = args.source.read_text(encoding="utf-8")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "kerdock_fixed.py").write_text(
-        build(source, haar=False), encoding="utf-8"
-    )
-    (args.output_dir / "kerdock_haar.py").write_text(
-        build(source, haar=True), encoding="utf-8"
-    )
+    for num_bases in counts:
+        for exact_tail in (False, True):
+            suffix = "exact" if exact_tail else "mask"
+            path = args.output_dir / f"kerdock_b{num_bases:03d}_{suffix}.py"
+            path.write_text(
+                build(source, num_bases=num_bases, exact_tail=exact_tail),
+                encoding="utf-8",
+            )
+
     helper = Path(__file__).with_name("mub_design.py")
     (args.output_dir / "mub_design.py").write_bytes(helper.read_bytes())
-    print(f"built variants in {args.output_dir}")
+    print(
+        f"built {2 * len(counts)} variants in {args.output_dir}: "
+        + ", ".join(str(x) for x in counts)
+    )
 
 
 if __name__ == "__main__":
