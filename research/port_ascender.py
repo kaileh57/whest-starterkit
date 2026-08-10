@@ -31,32 +31,42 @@ def expose_masks(src: str) -> str:
 
 
 def port_source(src: str, *, expose: bool) -> str:
-    # v0.10 makes flopscope arrays intentionally immutable and no longer routes
-    # mutation through real NumPy. The public file predates that contract.
-    src = src.replace("np.fill_diagonal(", "fnp.fill_diagonal(")
-
-    aug_patch = r'''
-# v0.10 compatibility bridge for the embedded pre-v0.10 port_np source.
-# Python's augmented assignment rebinds a local name to the value returned by
-# __iadd__/etc.; returning the functional operation is therefore equivalent for
-# name/attribute targets while preserving FLOP accounting.
-try:
-    from flopscope._array import FlopscopeArray as _WhestFlopscopeArray
-except Exception:
-    _WhestFlopscopeArray = None
-if _WhestFlopscopeArray is not None:
-    _WhestFlopscopeArray.__iadd__ = lambda self, other: fnp.add(self, other)
-    _WhestFlopscopeArray.__isub__ = lambda self, other: fnp.subtract(self, other)
-    _WhestFlopscopeArray.__imul__ = lambda self, other: fnp.multiply(self, other)
-    _WhestFlopscopeArray.__itruediv__ = lambda self, other: fnp.true_divide(self, other)
-    _WhestFlopscopeArray.__ifloordiv__ = lambda self, other: fnp.floor_divide(self, other)
-    _WhestFlopscopeArray.__ipow__ = lambda self, other: fnp.power(self, other)
-    _WhestFlopscopeArray.__imatmul__ = lambda self, other: fnp.matmul(self, other)
-'''
-    marker = "_backend.enable_flopscope()"
-    if marker not in src:
-        raise ValueError("could not find enable_flopscope marker")
-    src = src.replace(marker, marker + "\n" + aug_patch, 1)
+    # The embedded backend's own documentation describes the compatibility
+    # boundary that existed before a latency optimization: execute hot tensor
+    # operations through flopscope, then convert their results back to plain
+    # NumPy arrays. flopscope 0.10 deliberately makes its arrays immutable, so
+    # leaving wrapped results live breaks the port's normal in-place NumPy code.
+    old_decode = (
+        "def _decode(blob):\n"
+        "    return _zlib.decompress(_b64.b64decode(blob)).decode(\"utf-8\")"
+    )
+    new_decode = r'''def _decode(blob):
+    src = _zlib.decompress(_b64.b64decode(blob)).decode("utf-8")
+    if "Switchable compute backend for the numpy kprop port" in src:
+        replacements = {
+            "return _fnp.einsum(np_expr, *tensors)":
+                "return np.asarray(_fnp.einsum(np_expr, *tensors))",
+            "return _fnp.matmul(a, b)":
+                "return np.asarray(_fnp.matmul(a, b))",
+            "return _fnp.multiply(a, b)":
+                "return np.asarray(_fnp.multiply(a, b))",
+            "return _fnp.add(a, b)":
+                "return np.asarray(_fnp.add(a, b))",
+            "return _fnp.divide(a, b)":
+                "return np.asarray(_fnp.divide(a, b))",
+            "return _flops.stats.norm.pdf(x)":
+                "return np.asarray(_flops.stats.norm.pdf(x))",
+            "return _flops.stats.norm.cdf(x)":
+                "return np.asarray(_flops.stats.norm.cdf(x))",
+        }
+        for old, new in replacements.items():
+            if old not in src:
+                raise RuntimeError("missing backend compatibility target: " + old)
+            src = src.replace(old, new)
+    return src'''
+    if old_decode not in src:
+        raise ValueError("could not find embedded-source decoder")
+    src = src.replace(old_decode, new_decode, 1)
     return expose_masks(src) if expose else src
 
 
