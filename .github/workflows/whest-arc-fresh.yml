@@ -1,0 +1,84 @@
+name: Whest ARC fresh-seed baseline
+
+on:
+  push:
+    branches:
+      - agent/whest-breakthrough
+    paths:
+      - "research/arc_fresh_benchmark.py"
+      - "research/mub_design.py"
+      - ".github/workflows/whest-arc-fresh.yml"
+  workflow_dispatch:
+    inputs:
+      networks:
+        description: Fresh networks
+        required: false
+        default: "2"
+      rotations:
+        description: Independent Kerdock reference rotations per network
+        required: false
+        default: "6"
+      variants:
+        description: Comma-separated ARC variants
+        required: false
+        default: "k2_simple,k3_simple_factor,k3_augment_factor"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      NUMEXPR_NUM_THREADS: "4"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Clone pinned ARC cumulant implementation
+        run: |
+          git clone https://github.com/alignment-research-center/mlp_cumulant_propagation.git /tmp/mlp-kprop
+          cd /tmp/mlp-kprop
+          git checkout 93d091a4c26c042bfffa28f2e76a81bc0aba94bb
+
+      - name: Install numerical dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+          python -m pip install -e /tmp/mlp-kprop
+          python -m pip check
+
+      - name: Run fresh network-disjoint benchmark
+        run: |
+          python research/arc_fresh_benchmark.py \
+            --arc-src /tmp/mlp-kprop/src \
+            --networks "${{ github.event.inputs.networks || '2' }}" \
+            --rotations "${{ github.event.inputs.rotations || '6' }}" \
+            --variants "${{ github.event.inputs.variants || 'k2_simple,k3_simple_factor,k3_augment_factor' }}" \
+            --seed-base 95000000 \
+            --threads 4 \
+            --output research/results/arc_fresh_benchmark.json
+
+      - name: Show result
+        if: always()
+        run: |
+          cat research/results/arc_fresh_benchmark.json 2>/dev/null || true
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arc-fresh-${{ github.run_id }}
+          path: research/results/arc_fresh_benchmark.json
+          if-no-files-found: warn
+          retention-days: 30
