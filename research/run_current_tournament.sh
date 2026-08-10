@@ -75,3 +75,5 @@ run_one exact_gaussian_gl4 research/estimators/exact_gaussian.py EstimatorGL4 5
 
 python research/summarize_result.py --directory research/results \
   | tee research/results/summary.txt
+
+# contents-API touch: guarantees a push event for the research workflow.
