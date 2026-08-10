@@ -3,6 +3,7 @@ set -u -o pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+rm -rf research/results research/vendor
 mkdir -p research/results research/vendor
 
 python - <<'PY'
@@ -19,34 +20,43 @@ curl --fail --location --retry 4 --retry-delay 2 \
   https://raw.githubusercontent.com/ascender1729/whestbench-cumulant-propagation/c6f87fd1e12634447a452f73ebc136c43bf050d5/estimator.py \
   --output research/vendor/ascender_k3.py
 
-# The public file deliberately masks every final failure by returning zeros.
-# Make research-only copies that expose the traceback and test the most likely
-# v0.10 compatibility change: keep the grader's arrays in flopscope.numpy.
 python - <<'PY'
 from pathlib import Path
 
 base_path = Path("research/vendor/ascender_k3.py")
 src = base_path.read_text(encoding="utf-8")
-mask = "        except Exception:\n            return fnp.zeros((depth, width), dtype=fnp.float64)"
-expose = (
+
+# flopscope 0.10 arrays no longer implement the real-numpy array-function path
+# for mutation. The public estimator swallowed this and returned all zeros.
+ported = src.replace("np.fill_diagonal(", "fnp.fill_diagonal(")
+
+outer_mask = "        except Exception:\n            return fnp.zeros((depth, width), dtype=fnp.float64)"
+outer_expose = (
     "        except Exception as _research_exc:\n"
     "            import traceback as _research_tb\n"
-    "            print('ASCENDER_CURRENT_FAILURE:', repr(_research_exc), flush=True)\n"
+    "            print('ASCENDER_OUTER_FAILURE:', repr(_research_exc), flush=True)\n"
     "            _research_tb.print_exc()\n"
     "            raise"
 )
-if mask not in src:
+if outer_mask not in ported:
     raise SystemExit("could not find final zero-fallback mask")
-debug = src.rsplit(mask, 1)[0] + expose + src.rsplit(mask, 1)[1]
-Path("research/vendor/ascender_debug.py").write_text(debug, encoding="utf-8")
+ported_exposed = ported.rsplit(outer_mask, 1)[0] + outer_expose + ported.rsplit(outer_mask, 1)[1]
+Path("research/vendor/ascender_port_fill.py").write_text(ported_exposed, encoding="utf-8")
 
-old_weights = "Ws = [np.asarray(w, dtype=np.float64) for w in mlp.weights]"
-new_weights = "Ws = [fnp.asarray(w, dtype=fnp.float64) for w in mlp.weights]"
-if old_weights not in debug:
-    raise SystemExit("could not find weight conversion")
-Path("research/vendor/ascender_fnp_weights.py").write_text(
-    debug.replace(old_weights, new_weights, 1), encoding="utf-8"
+# The K3 call has a second mask that falls back to covariance. Expose it in a
+# separate copy so the next unsupported operation is visible.
+inner_mask = "                except Exception:\n                    means = None"
+inner_expose = (
+    "                except Exception as _k3_exc:\n"
+    "                    import traceback as _k3_tb\n"
+    "                    print('ASCENDER_K3_FAILURE:', repr(_k3_exc), flush=True)\n"
+    "                    _k3_tb.print_exc()\n"
+    "                    raise"
 )
+if inner_mask not in ported_exposed:
+    raise SystemExit("could not find inner k3 fallback mask")
+core_debug = ported_exposed.replace(inner_mask, inner_expose, 1)
+Path("research/vendor/ascender_core_debug.py").write_text(core_debug, encoding="utf-8")
 PY
 
 DATASET='hf://aicrowd/arc-whestbench-public-2026@v1-phase1'
@@ -93,15 +103,16 @@ run_one() {
   fi
 }
 
-# Diagnose the current K3 port before spending time on broad runs.
-run_one ascender_debug research/vendor/ascender_debug.py Estimator 1
-run_one ascender_fnp_weights research/vendor/ascender_fnp_weights.py Estimator 1
+# First establish whether the one-line current-backend port recovers a valid
+# fallback, then expose the actual K3 failure behind its inner mask.
+run_one ascender_port_fill research/vendor/ascender_port_fill.py Estimator 1
+run_one ascender_core_debug research/vendor/ascender_core_debug.py Estimator 1
 
-# Cheap reference points under the exact current accounting model.
-run_one mean examples/02_mean_propagation.py
-run_one covariance examples/03_covariance_propagation.py
-# Public file as published, including its zero fallback.
-run_one ascender_k3 research/vendor/ascender_k3.py
+# Independent exact bivariate-Gaussian closure sweep. A single real MLP is
+# enough to reject broken or over-budget variants before broader evaluation.
+run_one exact_gaussian_gl4 research/estimators/exact_gaussian.py EstimatorGL4 1
+run_one exact_gaussian_gl8 research/estimators/exact_gaussian.py EstimatorGL8 1
+run_one exact_gaussian_gl12 research/estimators/exact_gaussian.py EstimatorGL12 1
 
 python research/summarize_result.py --directory research/results \
   | tee research/results/summary.txt

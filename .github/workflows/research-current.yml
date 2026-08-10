@@ -1,71 +1,13 @@
-name: Current WhestBench research
+name: Legacy Whest research (manual only)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - agent/whest-research
 
 permissions:
   contents: read
 
 jobs:
-  benchmark:
+  note:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    env:
-      PYTHONUNBUFFERED: "1"
-      WHEST_SKIP_HARDWARE_FALLBACK_PROBES: "1"
-      OMP_NUM_THREADS: "4"
-      OPENBLAS_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install exact current stable stack
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "whestbench==0.14.0" "flopscope==0.10.0"
-          whest version --json
-          python - <<'PY'
-          import importlib.metadata as md
-          print("whestbench", md.version("whestbench"))
-          print("flopscope", md.version("flopscope"))
-          PY
-      - name: Fetch public cumulant baseline
-        run: |
-          mkdir -p /tmp/public-k3
-          curl -L --fail --retry 3 \
-            https://raw.githubusercontent.com/ascender1729/whestbench-cumulant-propagation/master/estimator.py \
-            -o /tmp/public-k3/estimator.py
-      - name: Validate candidates
-        run: |
-          whest validate --estimator examples/03_covariance_propagation.py --format json | tee validate_cov.json
-          whest validate --estimator /tmp/public-k3/estimator.py --format json | tee validate_k3.json
-      - name: Benchmark official covariance baseline on two public Mini MLPs
-        continue-on-error: true
-        run: |
-          whest run \
-            --estimator examples/03_covariance_propagation.py \
-            --dataset hf://aicrowd/arc-whestbench-public-2026@v1-phase1 \
-            --split mini --n-mlps 2 --runner local --max-threads 4 \
-            --format json | tee result_cov.json
-      - name: Benchmark public K3 baseline on two public Mini MLPs
-        continue-on-error: true
-        run: |
-          whest run \
-            --estimator /tmp/public-k3/estimator.py \
-            --dataset hf://aicrowd/arc-whestbench-public-2026@v1-phase1 \
-            --split mini --n-mlps 2 --runner local --max-threads 4 \
-            --format json | tee result_k3.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: current-stack-results
-          path: |
-            validate_*.json
-            result_*.json
-          if-no-files-found: warn
+      - run: echo "Superseded by .github/workflows/whest-research.yml"
