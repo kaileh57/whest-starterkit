@@ -1,4 +1,4 @@
-name: Whest Kerdock spherical-design benchmark
+name: Whest Kerdock basis-count frontier
 
 on:
   workflow_dispatch:
@@ -15,6 +15,10 @@ on:
       - "research/build_kerdock_estimators.py"
       - ".github/workflows/whest-kerdock.yml"
 
+concurrency:
+  group: whest-kerdock-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -24,6 +28,8 @@ jobs:
     timeout-minutes: 240
     env:
       N_MLPS: ${{ github.event.inputs.n_mlps || '3' }}
+      BASIS_COUNTS_CSV: "8,12,16,20,24,32,48,64,96,129"
+      BASIS_COUNTS_SPACE: "8 12 16 20 24 32 48 64 96 129"
       OMP_NUM_THREADS: "2"
       OPENBLAS_NUM_THREADS: "2"
       MKL_NUM_THREADS: "2"
@@ -49,7 +55,7 @@ jobs:
           python -m pip check
           whest version --format json
 
-      - name: Build pinned upstream and Kerdock variants
+      - name: Build pinned upstream and Kerdock frontier
         run: |
           rm -rf research/generated research/results
           mkdir -p research/generated research/results research/vendor
@@ -58,27 +64,33 @@ jobs:
             --output research/vendor/oishi_sweep.py
           cp research/vendor/oishi_sweep.py research/generated/sweep_upstream.py
           python research/build_kerdock_estimators.py \
-            research/vendor/oishi_sweep.py research/generated
-          python -m py_compile \
-            research/generated/sweep_upstream.py \
-            research/generated/kerdock_fixed.py \
-            research/generated/kerdock_haar.py \
-            research/generated/mub_design.py
+            research/vendor/oishi_sweep.py research/generated \
+            --basis-counts "$BASIS_COUNTS_CSV"
+          python -m py_compile research/generated/*.py
+          ls -lh research/generated
 
       - name: Verify exact design identities
         run: |
           python research/generated/mub_design.py | tee research/results/design_validation.json
 
       - name: Validate estimator contracts
+        shell: bash
         run: |
+          set -euo pipefail
           whest validate --estimator research/generated/sweep_upstream.py --class Estimator --format json \
             > research/results/validate_sweep.json
-          whest validate --estimator research/generated/kerdock_fixed.py --class Estimator --format json \
-            > research/results/validate_kerdock_fixed.json
-          whest validate --estimator research/generated/kerdock_haar.py --class Estimator --format json \
-            > research/results/validate_kerdock_haar.json
+          for b in $BASIS_COUNTS_SPACE; do
+            tag=$(printf '%03d' "$b")
+            for mode in mask exact; do
+              name="kerdock_b${tag}_${mode}"
+              whest validate \
+                --estimator "research/generated/${name}.py" \
+                --class Estimator --format json \
+                > "research/results/validate_${name}.json"
+            done
+          done
 
-      - name: Run paired public Mini benchmark
+      - name: Run paired public Mini frontier
         shell: bash
         run: |
           set -u -o pipefail
@@ -112,8 +124,13 @@ jobs:
           }
 
           run_one sweep_upstream research/generated/sweep_upstream.py
-          run_one kerdock_fixed research/generated/kerdock_fixed.py
-          run_one kerdock_haar research/generated/kerdock_haar.py
+          for b in $BASIS_COUNTS_SPACE; do
+            tag=$(printf '%03d' "$b")
+            for mode in mask exact; do
+              name="kerdock_b${tag}_${mode}"
+              run_one "$name" "research/generated/${name}.py"
+            done
+          done
           python research/summarize_result.py --directory research/results \
             | tee research/results/summary.txt
 
@@ -124,17 +141,14 @@ jobs:
           cat research/results/summary.txt 2>/dev/null || true
           echo "--- design identities ---"
           cat research/results/design_validation.json 2>/dev/null || true
-          echo "--- logs ---"
-          for f in research/results/*.log; do
-            echo "===== $f ====="
-            tail -n 120 "$f" || true
-          done
+          echo "--- failed/nonzero exits ---"
+          grep -H "exit_status=[^0]" research/results/*.log 2>/dev/null || true
 
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: whest-kerdock-${{ github.run_id }}
+          name: whest-kerdock-frontier-${{ github.run_id }}
           path: research/results
           if-no-files-found: warn
           retention-days: 30
