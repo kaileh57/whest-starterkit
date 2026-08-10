@@ -1,0 +1,73 @@
+name: Whest exact Strassen meter
+
+on:
+  push:
+    branches:
+      - agent/whest-breakthrough
+    paths:
+      - "research/strassen_meter.py"
+      - ".github/workflows/whest-strassen-meter.yml"
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Sample-axis width
+        required: false
+        default: "16384"
+      repeats:
+        description: Repetitions per algorithm
+        required: false
+        default: "2"
+
+permissions:
+  contents: read
+
+jobs:
+  meter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      NUMEXPR_NUM_THREADS: "4"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install exact grader libraries
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "flopscope==0.10.0" "whestbench==0.14.0"
+          python -m pip check
+          python - <<'PY'
+          from importlib.metadata import version
+          assert version("flopscope") == "0.10.0"
+          assert version("whestbench") == "0.14.0"
+          print("flopscope", version("flopscope"), "whestbench", version("whestbench"))
+          PY
+
+      - name: Meter algorithms
+        run: |
+          python research/strassen_meter.py \
+            --samples "${{ github.event.inputs.samples || '16384' }}" \
+            --repeats "${{ github.event.inputs.repeats || '2' }}" \
+            --output research/results/strassen_meter.json
+
+      - name: Show result
+        if: always()
+        run: cat research/results/strassen_meter.json 2>/dev/null || true
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strassen-meter-${{ github.run_id }}
+          path: research/results/strassen_meter.json
+          if-no-files-found: warn
+          retention-days: 30
