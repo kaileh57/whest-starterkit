@@ -69,3 +69,5 @@ jobs:
           path: research/results
           if-no-files-found: warn
           retention-days: 30
+
+# Experiment generation: functional K3 compatibility bridge.
