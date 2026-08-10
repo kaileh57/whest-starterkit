@@ -151,7 +151,10 @@ def run_arc_variant(mlp, variant: str) -> tuple[np.ndarray, float]:
         2: torch.eye(WIDTH, dtype=dtype),
     }
     t0 = time.perf_counter()
-    with torch.inference_mode():
+    # kprop mutates and clones structured tensors internally. no_grad disables
+    # autograd without creating inference tensors, whose missing version
+    # counters are incompatible with that implementation.
+    with torch.no_grad():
         result = mlp_kprop(
             mlp,
             K_in,
