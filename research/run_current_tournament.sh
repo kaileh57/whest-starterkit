@@ -69,11 +69,9 @@ run_one() {
 # Execute the current-backend K3 port with every masked exception exposed.
 run_one ascender_augops_debug research/vendor/ascender_augops_debug.py Estimator 1
 
-# GL4 has already converged to the GL8/GL12 result; broaden it to five real
-# mini MLPs while the K3 port is being exercised.
-run_one exact_gaussian_gl4 research/estimators/exact_gaussian.py EstimatorGL4 5
+# GL4 has already converged to GL8/GL12. Keep one official MLP here only as a
+# regression check; broader sweeps use the dedicated long-running workflow.
+run_one exact_gaussian_gl4 research/estimators/exact_gaussian.py EstimatorGL4 1
 
 python research/summarize_result.py --directory research/results \
   | tee research/results/summary.txt
-
-# contents-API touch: guarantees a push event for the research workflow.
