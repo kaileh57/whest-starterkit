@@ -1,0 +1,140 @@
+name: Whest Kerdock spherical-design benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      n_mlps:
+        description: Number of public Mini MLPs per estimator
+        required: false
+        default: "3"
+  push:
+    branches:
+      - agent/whest-breakthrough
+    paths:
+      - "research/mub_design.py"
+      - "research/build_kerdock_estimators.py"
+      - ".github/workflows/whest-kerdock.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      N_MLPS: ${{ github.event.inputs.n_mlps || '3' }}
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      NUMEXPR_NUM_THREADS: "2"
+      WHEST_SKIP_HARDWARE_FALLBACK_PROBES: "1"
+      HF_HOME: ${{ github.workspace }}/.cache/huggingface
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}/research/generated
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install exact current competition stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "flopscope==0.10.0" "whestbench==0.14.0" scipy
+          python -m pip check
+          whest version --format json
+
+      - name: Build pinned upstream and Kerdock variants
+        run: |
+          rm -rf research/generated research/results
+          mkdir -p research/generated research/results research/vendor
+          curl --fail --location --retry 4 --retry-delay 2 \
+            https://raw.githubusercontent.com/Oishi1029/arc-whestbench-2026/230a3acae4508ff62dbf57d8c13e534c32583e0a/estimators/sweep.py \
+            --output research/vendor/oishi_sweep.py
+          cp research/vendor/oishi_sweep.py research/generated/sweep_upstream.py
+          python research/build_kerdock_estimators.py \
+            research/vendor/oishi_sweep.py research/generated
+          python -m py_compile \
+            research/generated/sweep_upstream.py \
+            research/generated/kerdock_fixed.py \
+            research/generated/kerdock_haar.py \
+            research/generated/mub_design.py
+
+      - name: Verify exact design identities
+        run: |
+          python research/generated/mub_design.py | tee research/results/design_validation.json
+
+      - name: Validate estimator contracts
+        run: |
+          whest validate --estimator research/generated/sweep_upstream.py --class Estimator --format json \
+            > research/results/validate_sweep.json
+          whest validate --estimator research/generated/kerdock_fixed.py --class Estimator --format json \
+            > research/results/validate_kerdock_fixed.json
+          whest validate --estimator research/generated/kerdock_haar.py --class Estimator --format json \
+            > research/results/validate_kerdock_haar.json
+
+      - name: Run paired public Mini benchmark
+        shell: bash
+        run: |
+          set -u -o pipefail
+          DATASET='hf://aicrowd/arc-whestbench-public-2026@v1-phase1'
+
+          run_one() {
+            local name="$1"
+            local estimator="$2"
+            local out="research/results/${name}.json"
+            local log="research/results/${name}.log"
+            echo "===== ${name} =====" | tee "$log"
+            set +e
+            whest run \
+              --estimator "$estimator" \
+              --class Estimator \
+              --dataset "$DATASET" \
+              --split mini \
+              --n-mlps "$N_MLPS" \
+              --runner local \
+              --max-threads 2 \
+              --wall-time-limit 60 \
+              --format json \
+              --debug \
+              >"$out" 2>>"$log"
+            local status=$?
+            set -e
+            echo "exit_status=${status}" | tee -a "$log"
+            if [[ -s "$out" ]]; then
+              python research/summarize_result.py "$name" "$out" | tee -a "$log"
+            fi
+          }
+
+          run_one sweep_upstream research/generated/sweep_upstream.py
+          run_one kerdock_fixed research/generated/kerdock_fixed.py
+          run_one kerdock_haar research/generated/kerdock_haar.py
+          python research/summarize_result.py --directory research/results \
+            | tee research/results/summary.txt
+
+      - name: Show compact results
+        if: always()
+        run: |
+          echo "--- summary ---"
+          cat research/results/summary.txt 2>/dev/null || true
+          echo "--- design identities ---"
+          cat research/results/design_validation.json 2>/dev/null || true
+          echo "--- logs ---"
+          for f in research/results/*.log; do
+            echo "===== $f ====="
+            tail -n 120 "$f" || true
+          done
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: whest-kerdock-${{ github.run_id }}
+          path: research/results
+          if-no-files-found: warn
+          retention-days: 30
