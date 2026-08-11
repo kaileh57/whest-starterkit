@@ -30,7 +30,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.8.0'
-          python -m pip install 'numpy>=2.3.3' 'scipy>=1.16.2' 'einops>=0.8.1' 'jaxtyping>=0.3.2' 'tqdm>=4.67.1'
+          python -m pip install 'numpy>=2.3.3' 'scipy>=1.16.2' 'einops>=0.8.1' 'jaxtyping>=0.3.2' 'tqdm>=4.67.1' 'opt_einsum>=3.4.0'
           git clone https://github.com/alignment-research-center/mlp_cumulant_propagation.git /tmp/mlp_cumulant_propagation
           git -C /tmp/mlp_cumulant_propagation checkout 93d091a4c26c042bfffa28f2e76a81bc0aba94bb
 
