@@ -1,0 +1,46 @@
+name: Whest recursive dropped-diagram ablation
+
+on:
+  push:
+    branches: [agent/whest-breakthrough]
+    paths:
+      - research/arc_dropped_ablation.py
+      - .github/workflows/whest-dropped-ablation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ablate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/whest-breakthrough
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install ARC runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.8.0'
+          git clone https://github.com/alignment-research-center/mlp_cumulant_propagation.git /tmp/mlp_cumulant_propagation
+          git -C /tmp/mlp_cumulant_propagation checkout 93d091a4c26c042bfffa28f2e76a81bc0aba94bb
+          python -m pip install -e /tmp/mlp_cumulant_propagation
+      - name: Run recursive ablation
+        env:
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: |
+          python research/arc_dropped_ablation.py \
+            --arc-src /tmp/mlp_cumulant_propagation/src \
+            --out research-results/arc_dropped_ablation.json \
+            --width 12 --depth 32 --networks 6 --mc-samples 300000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arc-dropped-ablation
+          path: research-results/arc_dropped_ablation.json
+          if-no-files-found: error
