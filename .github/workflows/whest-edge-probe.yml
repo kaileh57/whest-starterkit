@@ -1,0 +1,45 @@
+name: Whest exact kappa3-edge probe
+
+on:
+  push:
+    branches: [agent/whest-breakthrough]
+    paths:
+      - research/arc_edge_probe.py
+      - .github/workflows/whest-edge-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identify-edge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/whest-breakthrough
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install ARC runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.8.0'
+          git clone https://github.com/alignment-research-center/mlp_cumulant_propagation.git /tmp/mlp_cumulant_propagation
+          git -C /tmp/mlp_cumulant_propagation checkout 93d091a4c26c042bfffa28f2e76a81bc0aba94bb
+          python -m pip install -e /tmp/mlp_cumulant_propagation
+      - name: Identify kappa3-edge term
+        env:
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: |
+          python research/arc_edge_probe.py \
+            --arc-src /tmp/mlp_cumulant_propagation/src \
+            --out research-results/arc_edge_probe.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arc-edge-probe
+          path: research-results/arc_edge_probe.json
+          if-no-files-found: error
