@@ -8,6 +8,17 @@ from pathlib import Path
 
 def test_phase2_goal_compression_smoke(tmp_path: Path) -> None:
     """Run a small unseen-network ablation and expose its aggregate in CI logs."""
+    install = subprocess.run(
+        ["uv", "pip", "install", "scipy>=1.15,<2", "--python", sys.executable],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=300,
+    )
+    print(install.stdout)
+    print(install.stderr)
+    assert install.returncode == 0
+
     output = tmp_path / "goal_compression.json"
     command = [
         sys.executable,
