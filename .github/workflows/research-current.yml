@@ -1,0 +1,13 @@
+name: Legacy Whest research (manual only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Superseded by .github/workflows/whest-research.yml"
