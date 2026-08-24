@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 
@@ -18,6 +19,14 @@ def test_phase2_goal_compression_smoke(tmp_path: Path) -> None:
     print(install.stdout)
     print(install.stderr)
     assert install.returncode == 0
+
+    vendor = Path("research/vendor")
+    vendor.mkdir(parents=True, exist_ok=True)
+    urllib.request.urlretrieve(
+        "https://raw.githubusercontent.com/paulrosu11/arc-cumulant-mlp-estimator/"
+        "main/whitebox_estimator/algorithm/estimator.py",
+        vendor / "paul_k3_estimator.py",
+    )
 
     output = tmp_path / "goal_compression.json"
     command = [
