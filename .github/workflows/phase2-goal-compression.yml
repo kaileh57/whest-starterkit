@@ -1,0 +1,91 @@
+name: Phase 2 goal-directed K3 compression
+
+# The workflow is intentionally branch-local while the method is an ablation.
+on:
+  workflow_dispatch:
+    inputs:
+      width:
+        description: Synthetic MLP width
+        required: false
+        default: "32"
+      seeds:
+        description: Number of unseen generated MLPs
+        required: false
+        default: "6"
+      qmc_exp:
+        description: Samples per scramble are 2**qmc_exp
+        required: false
+        default: "14"
+  push:
+    branches:
+      - agent/phase2-adjoint-k3
+    paths:
+      - "research/phase2_goal_compression.py"
+      - ".github/workflows/phase2-goal-compression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ablation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      NUMEXPR_NUM_THREADS: "2"
+      PYTHONUNBUFFERED: "1"
+      WIDTH: ${{ github.event.inputs.width || '32' }}
+      DEPTH: "16"
+      SEEDS: ${{ github.event.inputs.seeds || '6' }}
+      RANKS: "8,16,32"
+      QMC_EXP: ${{ github.event.inputs.qmc_exp || '14' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the exact Phase 2 stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "flopscope==0.12.0" \
+            "whestbench==0.16.0" \
+            "numpy>=2.2,<3" \
+            "scipy>=1.15,<2"
+          python - <<'PY'
+          from importlib.metadata import version
+          expected = {"flopscope": "0.12.0", "whestbench": "0.16.0"}
+          for package, wanted in expected.items():
+              got = version(package)
+              print(f"{package}={got}")
+              if got != wanted:
+                  raise SystemExit(f"expected {package}=={wanted}, got {got}")
+          PY
+
+      - name: Run unseen-network compression ablation
+        run: |
+          rm -rf research/results research/vendor
+          mkdir -p research/results research/vendor
+          python research/phase2_goal_compression.py \
+            --width "$WIDTH" \
+            --depth "$DEPTH" \
+            --seeds "$SEEDS" \
+            --ranks "$RANKS" \
+            --qmc-exp "$QMC_EXP" \
+            --output research/results/phase2_goal_compression.json \
+            2>&1 | tee research/results/phase2_goal_compression.log
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-goal-compression-${{ github.run_id }}
+          path: research/results
+          if-no-files-found: warn
+          retention-days: 30

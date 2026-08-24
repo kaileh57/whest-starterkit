@@ -45,3 +45,61 @@ jobs:
 
       - name: Run pytest (unit + parity + README snapshot)
         run: uv run pytest tests/ -v
+
+  phase2-goal-compression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Sync dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Install research dependency
+        run: uv pip install "scipy>=1.15,<2" --python .venv/bin/python
+
+      - name: Vendor the public K3 reference
+        run: |
+          mkdir -p research/vendor research/results
+          curl --fail --location --retry 4 \
+            https://raw.githubusercontent.com/paulrosu11/arc-cumulant-mlp-estimator/main/whitebox_estimator/algorithm/estimator.py \
+            --output research/vendor/paul_k3_estimator.py
+
+      - name: Run unseen-network compression ablation
+        run: |
+          uv run python research/phase2_goal_compression.py \
+            --width 24 \
+            --depth 16 \
+            --seeds 2 \
+            --seed-offset 91000 \
+            --ranks 6,12,24 \
+            --qmc-exp 12 \
+            --output research/results/phase2_goal_compression.json \
+            2>&1 | tee research/results/phase2_goal_compression.log
+
+      - name: Print aggregate
+        if: always()
+        run: |
+          if [ -f research/results/phase2_goal_compression.json ]; then
+            python - <<'PY'
+          import json
+          report = json.load(open('research/results/phase2_goal_compression.json'))
+          print('PHASE2_GOAL_COMPRESSION_RESULT=' + json.dumps(report['aggregate'], sort_keys=True))
+          PY
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-goal-compression-${{ github.run_id }}
+          path: research/results
+          if-no-files-found: warn
