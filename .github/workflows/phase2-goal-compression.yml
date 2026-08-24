@@ -1,5 +1,6 @@
 name: Phase 2 goal-directed K3 compression
 
+# The workflow is intentionally branch-local while the method is an ablation.
 on:
   workflow_dispatch:
     inputs:
