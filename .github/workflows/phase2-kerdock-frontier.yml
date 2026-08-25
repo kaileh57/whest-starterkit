@@ -1,0 +1,88 @@
+name: Phase 2 Kerdock frontier
+
+on:
+  push:
+    branches: [agent/phase2-kerdock-frontier]
+    paths:
+      - research/phase2_kerdock.py
+      - pyproject.toml
+      - .github/workflows/phase2-kerdock-frontier.yml
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact Phase 2 evaluator
+        run: python -m pip install --upgrade "flopscope>=0.12.0,<0.13.0" "whestbench>=0.16.0,<0.17.0"
+      - name: Verify source and Kerdock tables
+        run: |
+          set -euo pipefail
+          python -m py_compile research/phase2_kerdock.py
+          python - <<'PY'
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("phase2_kerdock", "research/phase2_kerdock.py")
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          assert len(mod._Q) >= 31, len(mod._Q)
+          assert {len(row) for row in mod._Q} == {512}
+          assert all(0 <= value < 4 for row in mod._Q for value in row)
+          print({"tables": len(mod._Q), "row_lengths": sorted({len(row) for row in mod._Q})})
+          PY
+      - name: Contract validation
+        run: |
+          set -euo pipefail
+          whest validate --estimator research/phase2_kerdock.py --class EstimatorK8 --format json | tee validate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase2-kerdock-verify
+          path: validate.json
+
+  benchmark:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        class_name: [EstimatorK8, EstimatorK12, EstimatorK16, EstimatorK20, EstimatorK24]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install exact Phase 2 evaluator
+        run: python -m pip install --upgrade "flopscope>=0.12.0,<0.13.0" "whestbench>=0.16.0,<0.17.0"
+      - name: Run three fixed Phase 2 mini MLPs
+        run: |
+          set -euo pipefail
+          whest run \
+            --estimator research/phase2_kerdock.py \
+            --class "${{ matrix.class_name }}" \
+            --dataset hf://aicrowd/arc-whestbench-public-2026@v2-phase2 \
+            --split mini \
+            --n-mlps 3 \
+            --runner subprocess \
+            --max-threads 2 \
+            --wall-time-limit 120 \
+            --format json \
+            > "${{ matrix.class_name }}.json"
+          python - <<'PY'
+          import json, pathlib
+          path = next(pathlib.Path('.').glob('EstimatorK*.json'))
+          data = json.loads(path.read_text())
+          keys = (
+              'adjusted_final_layer_score', 'final_layer_mse', 'all_layers_mse',
+              'mean_compute_utilization', 'mean_score_multiplier', 'failed_mlps',
+          )
+          print({k: data.get(k) for k in keys})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase2-kerdock-${{ matrix.class_name }}
+          path: ${{ matrix.class_name }}.json
