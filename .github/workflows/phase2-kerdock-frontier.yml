@@ -29,10 +29,10 @@ jobs:
           spec = importlib.util.spec_from_file_location("phase2_kerdock", "research/phase2_kerdock.py")
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
+          print({"tables": len(mod._Q), "row_lengths": [len(row) for row in mod._Q]})
           assert len(mod._Q) >= 31, len(mod._Q)
           assert {len(row) for row in mod._Q} == {512}
           assert all(0 <= value < 4 for row in mod._Q for value in row)
-          print({"tables": len(mod._Q), "row_lengths": sorted({len(row) for row in mod._Q})})
           PY
       - name: Contract validation
         run: |
