@@ -20,19 +20,19 @@ jobs:
           python-version: "3.11"
       - name: Install exact Phase 2 evaluator
         run: python -m pip install --upgrade "flopscope>=0.12.0,<0.13.0" "whestbench>=0.16.0,<0.17.0"
-      - name: Verify source and Kerdock tables
+      - name: Verify source and packed Kerdock generators
         run: |
           set -euo pipefail
           python -m py_compile research/phase2_kerdock.py
           python - <<'PY'
-          import importlib.util
+          import base64, importlib.util, zlib
           spec = importlib.util.spec_from_file_location("phase2_kerdock", "research/phase2_kerdock.py")
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
-          print({"tables": len(mod._Q), "row_lengths": [len(row) for row in mod._Q]})
-          assert len(mod._Q) >= 31, len(mod._Q)
-          assert {len(row) for row in mod._Q} == {512}
-          assert all(0 <= value < 4 for row in mod._Q for value in row)
+          raw = zlib.decompress(base64.b85decode(mod._PACKED))
+          assert len(raw) == 512 * 9 + 31 * 9 * 9, len(raw)
+          assert set(raw) <= {0, 1}
+          print({"packed_bytes": len(mod._PACKED), "decoded_bytes": len(raw)})
           PY
       - name: Contract validation
         run: |
