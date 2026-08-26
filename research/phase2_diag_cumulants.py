@@ -1,10 +1,9 @@
 """Cheap diagonal cumulant corrections on top of full-covariance K=2.
 
-These estimators keep the exact K=2 covariance geometry while propagating the
-marginal third/fourth cumulants with power kernels.  The final ReLU mean then
-uses the first Edgeworth/Bell terms.  Every numerical operation is a flopscope
-primitive; these are valid Phase-2 estimator candidates, not research-only
-wrappers.
+These estimators keep the K=2 covariance geometry while propagating marginal
+third/fourth cumulants with power kernels.  The final ReLU mean then uses the
+first Edgeworth/Bell terms.  Every numerical operation is a flopscope
+primitive; these are valid Phase-2 candidates, not research-only wrappers.
 """
 from __future__ import annotations
 
@@ -40,21 +39,23 @@ def _gaussian_relu_raw(mu, var, sigma, pdf, cdf):
     return m1, m2, m3, m4
 
 
-def _post_cumulants(m1, m2, m3, m4):
-    m1_2 = m1 * m1
-    variance = fnp.maximum(m2 - m1_2, _ZERO)
-    k3 = m3 - fnp.float32(3.0) * m1 * m2 + fnp.float32(2.0) * m1_2 * m1
+def _post_cumulants(mean, m2, m3, m4):
+    mean2 = mean * mean
+    variance = fnp.maximum(m2 - mean2, _ZERO)
+    k3 = m3 - fnp.float32(3.0) * mean * m2 + fnp.float32(2.0) * mean2 * mean
     central4 = (
         m4
-        - fnp.float32(4.0) * m1 * m3
-        + fnp.float32(6.0) * m1_2 * m2
-        - fnp.float32(3.0) * m1_2 * m1_2
+        - fnp.float32(4.0) * mean * m3
+        + fnp.float32(6.0) * mean2 * m2
+        - fnp.float32(3.0) * mean2 * mean2
     )
     k4 = central4 - fnp.float32(3.0) * variance * variance
     return variance, k3, k4
 
 
 def _edgeworth_mean(mu_gauss, alpha, var, sigma, pdf, k3, k4, order):
+    if order < 3:
+        return mu_gauss
     inv_var = fnp.float32(1.0) / var
     f3 = -alpha * pdf * inv_var
     out = mu_gauss + fnp.float32(1.0 / 6.0) * k3 * f3
@@ -91,14 +92,14 @@ def _predict(mlp: MLP, *, order: int, recursive: bool):
         alpha = mu_pre / sigma
         pdf, cdf = _normal(alpha)
         m1, m2, m3, m4 = _gaussian_relu_raw(mu_pre, var_pre, sigma, pdf, cdf)
-        var_post, k3_post, k4_post = _post_cumulants(m1, m2, m3, m4)
-
         corrected = _edgeworth_mean(
             m1, alpha, var_pre, sigma, pdf, k3_pre, k4_pre, order
         )
+
         is_last = layer == mlp.depth - 1
         mu_next = corrected if recursive else m1
         rows.append(corrected if is_last else mu_next)
+        var_post, k3_post, k4_post = _post_cumulants(mu_next, m2, m3, m4)
 
         cov = fnp.multiply(fnp.outer(cdf, cdf), cov_pre)
         fnp.fill_diagonal(cov, var_post)
