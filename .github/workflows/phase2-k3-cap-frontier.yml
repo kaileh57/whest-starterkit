@@ -17,7 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         class_name:
-          - EstimatorK2
           - EstimatorJ16
           - EstimatorJ32
           - EstimatorJ64
@@ -85,7 +84,7 @@ jobs:
           echo "validate_status=$status"
           cat "research/results/validate_${{ matrix.class_name }}.log" || true
 
-      - name: Run one fixed official Phase 2 mini MLP
+      - name: Research-only accuracy run with residual gate disabled
         run: |
           set +e
           whest run \
@@ -97,6 +96,7 @@ jobs:
             --runner subprocess \
             --max-threads 2 \
             --wall-time-limit 120 \
+            --no-residual-wall-time-limit \
             --format json \
             --debug \
             > "research/results/${{ matrix.class_name }}.json" \
@@ -157,7 +157,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: phase2-k3-${{ matrix.class_name }}-${{ github.run_id }}
+          name: phase2-k3-signal-${{ matrix.class_name }}-${{ github.run_id }}
           path: research/results
           if-no-files-found: warn
           retention-days: 30
