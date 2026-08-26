@@ -1,0 +1,94 @@
+name: Phase 2 diagonal cumulant frontier
+
+on:
+  push:
+    branches: [agent/phase2-k3-stability]
+    paths:
+      - research/phase2_diag_cumulants.py
+      - .github/workflows/phase2-diag-cumulants.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        class_name:
+          - EstimatorK2
+          - EstimatorDiagK3Final
+          - EstimatorDiagK34Final
+          - EstimatorDiagK346Final
+          - EstimatorDiagK3Recursive
+          - EstimatorDiagK346Recursive
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      NUMEXPR_NUM_THREADS: "2"
+      PYTHONUNBUFFERED: "1"
+      WHEST_SKIP_HARDWARE_FALLBACK_PROBES: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install exact Phase 2 stack
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "flopscope==0.12.0" "whestbench==0.16.0"
+
+      - name: Validate
+        run: |
+          mkdir -p research/results
+          python -m py_compile research/phase2_diag_cumulants.py
+          whest validate \
+            --estimator research/phase2_diag_cumulants.py \
+            --class "${{ matrix.class_name }}" \
+            --format json \
+            > "research/results/validate_${{ matrix.class_name }}.json"
+
+      - name: Run three fixed official Phase 2 mini MLPs
+        run: |
+          whest run \
+            --estimator research/phase2_diag_cumulants.py \
+            --class "${{ matrix.class_name }}" \
+            --dataset hf://aicrowd/arc-whestbench-public-2026@v2-phase2 \
+            --split mini \
+            --n-mlps 3 \
+            --runner subprocess \
+            --max-threads 2 \
+            --wall-time-limit 120 \
+            --format json \
+            > "research/results/${{ matrix.class_name }}.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          name = "${{ matrix.class_name }}"
+          data = json.loads(Path("research/results", name + ".json").read_text())
+          results = data.get("results", data)
+          for key in (
+              "adjusted_final_layer_score",
+              "final_layer_mse",
+              "all_layers_mse",
+              "mean_score_multiplier",
+              "mean_compute_utilization",
+              "mean_effective_compute",
+              "failure_breakdown",
+          ):
+              print(f"{key}={results.get(key)}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase2-diag-${{ matrix.class_name }}-${{ github.run_id }}
+          path: research/results
+          if-no-files-found: warn
+          retention-days: 30
