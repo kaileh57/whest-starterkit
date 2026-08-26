@@ -1,21 +1,18 @@
 """Goal-directed leading off-diagonal K=3 correction for Phase 2.
 
-For z jointly Gaussian and x_i=ReLU(z_i), the dominant distinct-index third
+For jointly Gaussian z and x_i=ReLU(z_i), the dominant distinct-index third
 cumulant is the connected Hermite (1,1,2) sector
 
   kappa_ijk ~= g1_i g1_j g2_k C_ik C_jk + two permutations,
 
-where g1=E[ReLU'(z)]=Phi(alpha), g2=E[ReLU''(z)]=phi(alpha)/sigma.
-Contracting this tensor with every next-layer weight column does not require
-materializing an n^3 tensor:
+where g1=Phi(alpha) and g2=phi(alpha)/sigma. Contracting this tensor
+against every next-layer weight column reduces to one dense product:
 
-  <kappa, w_q^3> = 3 sum_k g2_k w_kq [C(g1*w_q)]_k^2
-                    + sum_k residual_diag_k w_kq^3.
+  <kappa,w_q^3> = 3 sum_k g2_k w_kq [C(g1*w_q)]_k^2
+                   + sum_k residual_diag_k w_kq^3.
 
-The residual term replaces the approximation's diagonal with the exact
-marginal third cumulant.  This is the full leading O(correlation^2) connected
-sector, evaluated for all outputs with one n-by-n product per layer.  All
-numerics use flopscope primitives.
+The residual replaces the approximation's diagonal with the exact marginal
+third cumulant. All numerical work uses flopscope primitives.
 """
 from __future__ import annotations
 
@@ -31,9 +28,10 @@ _TWO = fnp.float32(2.0)
 
 
 def _normal(alpha):
-    pdf = flops.stats.norm.pdf(alpha).astype(fnp.float32)
-    cdf = flops.stats.norm.cdf(alpha).astype(fnp.float32)
-    return pdf, cdf
+    return (
+        flops.stats.norm.pdf(alpha).astype(fnp.float32),
+        flops.stats.norm.cdf(alpha).astype(fnp.float32),
+    )
 
 
 def _relu_moments(mu, var, sigma, pdf, cdf):
@@ -49,8 +47,7 @@ def _relu_moments(mu, var, sigma, pdf, cdf):
 
 
 def _contract_cross_k3(cov_pre, g1, g2, diag_residual, weight):
-    weighted = g1[:, None] * weight
-    projected = fnp.einsum("ij,iq->jq", cov_pre, weighted)
+    projected = fnp.einsum("ij,iq->jq", cov_pre, g1[:, None] * weight)
     cross = _THREE * fnp.sum(
         g2[:, None] * weight * projected * projected,
         axis=0,
@@ -77,42 +74,50 @@ def _predict(mlp: MLP, *, mode: str):
         sigma = fnp.sqrt(var_pre)
         alpha = mu_pre / sigma
         pdf, cdf = _normal(alpha)
-        mean_post, var_post, marginal_k3 = _relu_moments(
+        mean_base, var_post, marginal_k3 = _relu_moments(
             mu_pre, var_pre, sigma, pdf, cdf
         )
 
-        propagated = cdf * fnp.einsum("ij,i->j", weight, delta)
+        is_last = layer == mlp.depth - 1
+        need_local = previous is not None and (
+            mode in ("source_sum", "recursive") or (mode == "final" and is_last)
+        )
         local = fnp.zeros(width, dtype=fnp.float32)
-        if previous is not None:
+        if need_local:
             prev_cov, prev_g1, prev_g2, prev_residual = previous
             k3_pre = _contract_cross_k3(
                 prev_cov, prev_g1, prev_g2, prev_residual, weight
             )
-            f3 = -alpha * pdf / var_pre
-            local = _ONE_SIXTH * k3_pre * f3
+            local = _ONE_SIXTH * k3_pre * (-alpha * pdf / var_pre)
 
-        is_last = layer == mlp.depth - 1
         if mode == "final":
             delta_next = local if is_last else fnp.zeros(width, dtype=fnp.float32)
+            mean_out = mean_base + delta_next
+            mean_next = mean_base
         elif mode == "source_sum":
+            propagated = cdf * fnp.einsum("ij,i->j", weight, delta)
             delta_next = propagated + local
+            mean_out = mean_base + delta_next
+            mean_next = mean_base
         elif mode == "recursive":
-            delta_next = propagated + local
-            mean_post = mean_post + delta_next
+            delta_next = fnp.zeros(width, dtype=fnp.float32)
+            mean_next = mean_base + local
+            mean_out = mean_next
         else:
             delta_next = fnp.zeros(width, dtype=fnp.float32)
+            mean_next = mean_base
+            mean_out = mean_base
 
-        rows.append(mean_post + delta_next if mode != "recursive" else mean_post)
+        rows.append(mean_out)
 
         g2 = pdf / sigma
         approx_diag = _THREE * cdf * cdf * g2 * var_pre * var_pre
-        diag_residual = marginal_k3 - approx_diag
-        previous = (cov_pre, cdf, g2, diag_residual)
+        previous = (cov_pre, cdf, g2, marginal_k3 - approx_diag)
 
         cov = fnp.multiply(fnp.outer(cdf, cdf), cov_pre)
         fnp.fill_diagonal(cov, var_post)
         cov = flops.as_symmetric(cov, symmetry=(0, 1))
-        mu = mean_post
+        mu = mean_next
         delta = delta_next
 
     return fnp.stack(rows, axis=0)
